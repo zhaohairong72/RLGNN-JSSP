@@ -1,3 +1,12 @@
+"""Machine-side data structures for the JSSP environment.
+
+:mod:`operationHelpers` models the operations; this module models the
+machines that execute them. A :class:`MachineManager` owns every machine and
+forwards dispatch / time-stepping calls; each :class:`Machine` tracks the
+operations assigned to it and its own processing state, including the
+"delayed op" look-ahead reservation mechanic.
+"""
+
 import random
 from collections import OrderedDict
 import numpy as np
@@ -8,6 +17,15 @@ from semiMDP.configs import (PROCESSING_NODE_SIG,
 
 
 class MachineManager:
+    """Owns every machine of an instance and routes dispatch / time-step calls.
+
+    Args:
+        machine_matrix: ``(num_jobs, num_machines)`` int array.
+        job_manager: the :class:`JobManager` whose operations are scheduled here.
+        delay: whether machines may use look-ahead reservations (see Machine).
+        verbose: print machine load/unload events when True.
+    """
+
     def __init__(self,
                  machine_matrix,
                  job_manager,
@@ -30,16 +48,28 @@ class MachineManager:
             self.machines[m_id] = Machine(m_id, possible_ops, delay, verbose)
 
     def do_processing(self, t):
+        """Advance processing of every machine by one time step at time ``t``."""
         for _, machine in self.machines.items():
             machine.do_processing(t)
 
     def load_op(self, machine_id, op, t):
+        """Load operation ``op`` onto machine ``machine_id`` at time ``t``."""
         self.machines[machine_id].load_op(op, t)
 
     def __getitem__(self, index):
+        """Return the machine with id ``index``."""
         return self.machines[index]
 
     def get_available_machines(self, shuffle_machine=True):
+        """Return machines that currently have doable, unreserved work.
+
+        Args:
+            shuffle_machine: if True, return the machines in random order
+                (used so a random policy does not always pick the same machine).
+
+        Returns:
+            List of available :class:`Machine` objects.
+        """
         m_list = []
         for _, m in self.machines.items():
             if m.available():
@@ -49,17 +79,22 @@ class MachineManager:
             m_list = random.sample(m_list, len(m_list))
 
         return m_list
-    
+
     # get idle machines' list
     def get_idle_machines(self):
+        """Return machines that are idle (no current op) and still have work."""
         m_list = []
         for _, m in self.machines.items():
             if m.current_op is None and not m.work_done():
                 m_list.append(m)
         return m_list
-    
+
     # calculate the length of queues for all machines
     def cal_total_cost(self):
+        """Total queued-work cost: sum of no-delay doable op counts per machine.
+
+        Used as the ``utilization`` reward (its negation) in :meth:`Simulator.observe`.
+        """
         c = 0
         for _, m in self.machines.items():
             c += len(m.doable_ops_no_delay)
@@ -67,24 +102,36 @@ class MachineManager:
 
     # update all cost functions of machines
     def update_cost_function(self, cost):
+        """Add ``cost`` to every machine's accumulated cost counter."""
         for _, m in self.machines.items():
             m.cost += cost
 
     def get_machines(self):
+        """Return all machines in random order."""
         m_list = [m for _, m in self.machines.items()]
         return random.sample(m_list, len(m_list))
 
     def all_delayed(self):
+        """True if every machine is currently holding a delayed (reserved) op."""
         return np.product([m.delayed_op is not None for _, m in self.machines.items()])
 
     def fab_stuck(self):
-        # All machines are not available and All machines are delayed.
+        """True if the fab is deadlocked: no machine available and all delayed.
+
+        No op can make progress, so the schedule cannot continue.
+        """
+        # All machines are not available and all machines are delayed.
         all_machines_not_available_cond = not self.get_available_machines()
         all_machines_delayed_cond = self.all_delayed()
         return all_machines_not_available_cond and all_machines_delayed_cond
 
 
 class NodeProcessingTimeMachineManager(MachineManager):
+    """:class:`MachineManager` variant paired with the node-processing-time graph.
+
+    Rebuilds the machine dict over :class:`NodeProcessingTimeOperation` jobs;
+    operation behaviour is inherited unchanged from :class:`MachineManager`.
+    """
 
     def __init__(self, machine_matrix, job_manager, delay=True, verbose=False):
 
@@ -106,6 +153,18 @@ class NodeProcessingTimeMachineManager(MachineManager):
 
 
 class Machine:
+    """A single machine that processes a fixed set of possible operations.
+
+    Attributes include the backlog (``possible_ops`` / ``remain_ops``), the
+    currently loaded ``current_op``, an optional look-ahead ``delayed_op``
+    reservation, and a running ``cost`` counter.
+
+    The ``delay`` flag enables look-ahead: an op may be loaded once its
+    predecessor is merely *processing* (not just done), except for the very
+    first op placed on a machine, which must wait for the predecessor to be
+    fully done.
+    """
+
     def __init__(self, machine_id, possible_ops, delay, verbose):
         self.machine_id = machine_id
         self.possible_ops = possible_ops
@@ -124,6 +183,11 @@ class Machine:
         return "Machine {}".format(self.machine_id)
 
     def available(self):
+        """True if the machine can accept an op right now.
+
+        Requires: some op is doable, no op is currently being processed, and
+        the machine is not blocked waiting on a delayed (reserved) op.
+        """
         future_work_exist_cond = bool(self.doable_ops())
         currently_not_processing_cond = self.current_op is None
         not_wait_for_delayed_cond = not self.wait_for_delayed()
@@ -131,6 +195,7 @@ class Machine:
         return ret
 
     def wait_for_delayed(self):
+        """True if the machine is waiting for a delayed op whose predecessor is not done yet."""
         wait_for_delayed_cond = self.delayed_op is not None
         ret = wait_for_delayed_cond
         if wait_for_delayed_cond:
@@ -139,6 +204,15 @@ class Machine:
         return ret
 
     def doable_ops(self):
+        """Return the subset of remaining ops that can run right now.
+
+        An op is doable if it has no predecessor (first op of a job) or its
+        predecessor satisfies the ready condition. With ``delay`` enabled,
+        non-first ops on a machine may start while the predecessor is merely
+        *processing* (look-ahead); the very first op placed on a machine must
+        still wait for the predecessor to be *done*. Without ``delay`` the
+        predecessor must always be done.
+        """
         # doable_ops are subset of remain_ops.
         # some ops are doable when the prev_op is 'done' or 'processing' or 'start'
         doable_ops = []
@@ -168,6 +242,7 @@ class Machine:
 
     @property
     def doable_ops_id(self):
+        """Return the ids of currently doable ops."""
         doable_ops_id = []
         doable_ops = self.doable_ops()
         for op in doable_ops:
@@ -177,21 +252,32 @@ class Machine:
 
     @property
     def doable_ops_no_delay(self):
+        """Doable ops *without* look-ahead: predecessor must be fully done.
+
+        Used to compute the no-delay queue length (utilization cost).
+        """
         doable_ops = []
         for op in self.remain_ops:
             prev_start = op.prev_op is None
             if prev_start:
                 doable_ops.append(op)
             else:
-                prev_done = op.prev_op.node_status == DONE_NODE_SIG 
+                prev_done = op.prev_op.node_status == DONE_NODE_SIG
                 if prev_done:
                     doable_ops.append(op)
         return doable_ops
 
     def work_done(self):
+        """True when there are no remaining ops left to process."""
         return not self.remain_ops
 
     def load_op(self, t, op):
+        """Start processing ``op`` on this machine at time ``t``.
+
+        Performs double-checks (machine available, op processible, op is one of
+        this machine's possible ops) and clears any matching delayed reservation,
+        then flips the op into PROCESSING and removes it from the backlog.
+        """
 
         # Procedures for double-checkings
         # If machine waits for the delayed job is done:
@@ -213,7 +299,7 @@ class Machine:
                                                                           op.step_id))
 
         # Essential condition for checking whether input is delayed
-        # if delayed then, flush dealed_op attr
+        # if delayed then, flush delayed_op attr
         if op == self.delayed_op:
             if self.verbose:
                 print("[DELAYED OP LOADED] / MACHINE {} / {} / at {}".format(self.machine_id, op, t))
@@ -234,6 +320,7 @@ class Machine:
         self.remain_ops.remove(self.current_op)
 
     def unload(self, t):
+        """Mark the current op as done at time ``t`` and free the machine."""
         if self.verbose:
             print("[UNLOAD] / Machine {} / Op {} / t = {}".format(self.machine_id, self.current_op, t))
         self.current_op.node_status = DONE_NODE_SIG
@@ -245,6 +332,13 @@ class Machine:
         self.remaining_time = 0
 
     def do_processing(self, t):
+        """Advance this machine's processing by one time unit at time ``t``.
+
+        * If an op is being processed, decrement its remaining time and unload
+          it when it reaches zero.
+        * If the machine is instead holding a delayed op, accrue its delay time.
+        * Waiting doable ops accumulate ``waiting_time`` each tick they wait.
+        """
         if self.remaining_time > 0:  # When machine do some operation
             if self.current_op is not None:
                 self.current_op.remaining_time -= 1
@@ -269,12 +363,18 @@ class Machine:
             self.remaining_time -= 1
 
     def transit(self, t, a):
+        """Apply decision ``a`` (an operation) to this machine at time ``t``.
+
+        If ``a`` is processible now, load it. Otherwise it is a look-ahead
+        reservation: mark it DELAYED and have the machine wait for it.
+        """
         if self.available():  # Machine is ready to process.
             if a.processible():  # selected action is ready to be loaded right now.
                 self.load_op(t, a)
             else:  # When input operation turns out to be 'delayed'
                 a.node_status = DELAYED_NODE_SIG
                 self.delayed_op = a
+                # Reserve for the predecessor's remaining processing time plus this op's own time.
                 self.delayed_op.remaining_time = a.processing_time + a.prev_op.remaining_time
                 self.remaining_time = a.processing_time + a.prev_op.remaining_time
                 self.current_op = None  # MACHINE is now waiting for delayed ops
