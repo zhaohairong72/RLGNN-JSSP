@@ -17,3 +17,12 @@ __pycache__/
 
 # pipenv related
 Pipfile.lock
+
+# virtual environment
+venv/
+venv39/
+
+# generated graphs
+*.dot
+*.svg
+*.npy
