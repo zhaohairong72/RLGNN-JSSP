@@ -1,8 +1,17 @@
+"""Hard-coded classic JSSP benchmark instances (Fisher & Thompson).
+
+Each builder returns a :class:`Simulator` already configured with the
+benchmark's machine-order and processing-time matrices. Any extra
+positional / keyword arguments are forwarded to the ``Simulator`` constructor
+(e.g. ``verbose``, ``delay``).
+"""
+
 import numpy as np
 from semiMDP.simulators import Simulator
 
 
 def FT06(*args, **kwargs):
+    """Build the FT06 (6x6) Fisher-Thompson benchmark as a :class:`Simulator`."""
 
     machine_matrix = np.array([[2, 0, 1, 3, 5, 4],
                                [1, 2, 4, 5, 0, 3],
@@ -31,6 +40,7 @@ def FT06(*args, **kwargs):
 
 
 def FT10(*args, **kwargs):
+    """Build the FT10 (10x10) Fisher-Thompson benchmark as a :class:`Simulator`."""
 
     machine_matrix = np.array([[0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
                                [0, 2, 4, 9, 3, 1, 6, 5, 7, 8],
