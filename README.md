@@ -35,7 +35,7 @@ pip install --upgrade pip
 pip install torch-scatter==2.0.9 -f https://pytorch-geometric.com/whl/torch-1.10.0+cu113.html
 pip install torch-sparse==0.6.12 -f https://pytorch-geometric.com/whl/torch-1.10.0+cu113.html
 pip install torch-geometric==2.0.2
-pip install ortools==9.0.9972
+pip install ortools==9.0.9048
 pip install plotly==5.5.0
 pip install networkx==2.6.3
 pip install matplotlib==3.5.1
