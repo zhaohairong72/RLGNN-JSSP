@@ -17,3 +17,5 @@ __pycache__/
 
 # pipenv related
 Pipfile.lock
+venv/
+venv39/
